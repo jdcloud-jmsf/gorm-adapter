@@ -452,7 +452,7 @@ func (a *Adapter) truncateTable() error {
 	case "sqlite3":
 		sql = fmt.Sprintf("delete from %s", a.getFullTableName())
 	case "postgres":
-		sql = fmt.Sprintf("truncate table %s RESTART IDENTITY", a.getFullTableName())
+		sql = fmt.Sprintf("truncate table %s", a.getFullTableName())
 	case "sqlserver":
 		sql = fmt.Sprintf("truncate table %s", a.getFullTableName())
 	case "mysql":
