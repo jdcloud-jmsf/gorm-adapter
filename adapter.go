@@ -615,7 +615,6 @@ func (a *Adapter) SavePolicyCtx(ctx context.Context, model model.Model) error {
 	tx := a.db.WithContext(ctx).Clauses(dbresolver.Write).Begin()
 
 	err = a.truncateTable()
-
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -627,7 +626,7 @@ func (a *Adapter) SavePolicyCtx(ctx context.Context, model model.Model) error {
 		for _, rule := range ast.Policy {
 			lines = append(lines, a.savePolicyLine(ptype, rule))
 			if len(lines) > flushEvery {
-				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&lines).Error; err != nil {
+				if err := saveLinesWithoutConflict(ctx, tx, lines); err != nil {
 					tx.Rollback()
 					return err
 				}
@@ -640,7 +639,7 @@ func (a *Adapter) SavePolicyCtx(ctx context.Context, model model.Model) error {
 		for _, rule := range ast.Policy {
 			lines = append(lines, a.savePolicyLine(ptype, rule))
 			if len(lines) > flushEvery {
-				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&lines).Error; err != nil {
+				if err := saveLinesWithoutConflict(ctx, tx, lines); err != nil {
 					tx.Rollback()
 					return err
 				}
@@ -648,8 +647,9 @@ func (a *Adapter) SavePolicyCtx(ctx context.Context, model model.Model) error {
 			}
 		}
 	}
+
 	if len(lines) > 0 {
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&lines).Error; err != nil {
+		if err := saveLinesWithoutConflict(ctx, tx, lines); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -657,6 +657,25 @@ func (a *Adapter) SavePolicyCtx(ctx context.Context, model model.Model) error {
 
 	err = tx.Commit().Error
 	return err
+}
+
+func saveLinesWithoutConflict(ctx context.Context, tx *gorm.DB, lines []CasbinRule) error {
+	for _, line := range lines {
+		var count int64
+		err := tx.WithContext(ctx).Model(&CasbinRule{}).
+			Where("ptype = ? AND v0 = ? AND v1 = ? AND v2 = ? AND v3 = ? AND v4 = ? AND v5 = ?",
+				line.Ptype, line.V0, line.V1, line.V2, line.V3, line.V4, line.V5).
+			Count(&count).Error
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			if err := tx.WithContext(ctx).Create(&line).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // AddPolicy adds a policy rule to the storage.
@@ -667,7 +686,18 @@ func (a *Adapter) AddPolicy(sec string, ptype string, rule []string) error {
 // AddPolicyCtx adds a policy rule to the storage.
 func (a *Adapter) AddPolicyCtx(ctx context.Context, sec string, ptype string, rule []string) error {
 	line := a.savePolicyLine(ptype, rule)
-	err := a.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&line).Error
+	// Check if the record already exists
+	var count int64
+	err := a.db.WithContext(ctx).Model(&CasbinRule{}).
+		Where("ptype = ? AND v0 = ? AND v1 = ? AND v2 = ? AND v3 = ? AND v4 = ? AND v5 = ?",
+			line.Ptype, line.V0, line.V1, line.V2, line.V3, line.V4, line.V5).
+		Count(&count).Error
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		err = a.db.WithContext(ctx).Create(&line).Error
+	}
 	return err
 }
 
@@ -690,7 +720,25 @@ func (a *Adapter) AddPolicies(sec string, ptype string, rules [][]string) error 
 		line := a.savePolicyLine(ptype, rule)
 		lines = append(lines, line)
 	}
-	return a.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&lines).Error
+
+	return a.db.Transaction(func(tx *gorm.DB) error {
+		for _, line := range lines {
+			var count int64
+			err := tx.Model(&CasbinRule{}).
+				Where("ptype = ? AND v0 = ? AND v1 = ? AND v2 = ? AND v3 = ? AND v4 = ? AND v5 = ?",
+					line.Ptype, line.V0, line.V1, line.V2, line.V3, line.V4, line.V5).
+				Count(&count).Error
+			if err != nil {
+				return err
+			}
+			if count == 0 {
+				if err := tx.Create(&line).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // Transaction perform a set of operations within a transaction
